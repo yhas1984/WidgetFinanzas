@@ -1,0 +1,63 @@
+{
+  "currency": "usd",
+  "update_interval_seconds": 60,
+  "run_on_startup": true,
+  "assets": [
+    {
+      "id": "bitcoin",
+      "symbol": "BTC",
+      "color": "#F7931A",
+      "type": "crypto",
+      "yf_symbol": "BTC-USD"
+    },
+    {
+      "id": "ethereum",
+      "symbol": "ETH",
+      "color": "#627EEA",
+      "type": "crypto",
+      "yf_symbol": "ETH-USD"
+    },
+    {
+      "id": "hedera-hashgraph",
+      "symbol": "HBAR",
+      "color": "#00BFFF",
+      "type": "crypto",
+      "yf_symbol": "HBAR-USD"
+    },
+    {
+      "id": "sp500",
+      "symbol": "S&P500",
+      "color": "#00FF00",
+      "type": "yahoo",
+      "yf_symbol": "^GSPC"
+    },
+    {
+      "id": "gold",
+      "symbol": "GOLD",
+      "color": "#FFD700",
+      "type": "yahoo",
+      "yf_symbol": "GC=F"
+    },
+    {
+      "id": "oil",
+      "symbol": "OIL",
+      "color": "#FFA500",
+      "type": "yahoo",
+      "yf_symbol": "CL=F"
+    },
+    {
+      "id": "eurusd",
+      "symbol": "EUR/USD",
+      "color": "#4169E1",
+      "type": "yahoo",
+      "yf_symbol": "EURUSD=X"
+    },
+    {
+      "id": "usdeur",
+      "symbol": "USD/EUR",
+      "color": "#9932CC",
+      "type": "yahoo",
+      "yf_symbol": "USDEUR=X"
+    }
+  ]
+}
