@@ -1,53 +1,44 @@
 # WidgetFinanzas
 
-Widget de escritorio para escritorio Linux que muestra cotizaciones en tiempo real de criptomonedas, índices bursátiles, commodities y forex en una barra scrolleable transparente.
+Widget de escritorio para Linux que muestra cotizaciones en tiempo real de criptomonedas, índices bursátiles, commodities y forex en una barra scrolleable transparente integrada al escritorio.
 
-![screenshot](icon.png)
+![WidgetFinanzas](icon.png)
 
 ## Características
 
-- **Visualización tipo ticker** — precios se desplazan horizontalmente con scroll infinito
-- **Soporte multi-activo** — criptos (BTC, ETH, HBAR), índices (S&P500), commodities (oro, petróleo), forex (EUR/USD)
-- **Actualización automática** — intervalo configurable (por defecto 60 segundos)
-- **Código de colores** — cambios de precio con colores y flechas según magnitud
-- **Efecto de parpadeo** — cuando un activo tiene un cambio significativo (>1%)
-- **Transparente y siempre al fondo** — se integra al escritorio sin molestar
-- **Auto-inicio** — se configura automáticamente en el arranque de sesión (Linux)
-- **Tecla ESC** — cerrar la aplicación
+| Feature | Descripción |
+|---------|-------------|
+| **Ticker animado** | Precios con scroll infinito horizontal |
+| **Multi-activo** | Criptos, índices, commodities, forex y acciones |
+| **Colores dinámicos** | Verde (subida), rojo (bajada), flechas según magnitud |
+| **Parpadeo** | Alerta visual en cambios >1% |
+| **Arrastrable** | Mover el widget con el ratón a cualquier posición |
+| **Dock nativo** | Se integra al gestor de ventanas como dock |
+| **Transparente** | Fondo translúcido, siempre al fondo |
+| **Auto-inicio** | Se ejecuta automáticamente al iniciar sesión |
+| **Configurable** | Editar `config.json` para personalizar activos |
 
 ## Requisitos
 
 - Python 3.8+
 - PyQt5
 - yfinance
-- Un entorno de escritorio Linux (probado en GNOME, KDE)
+- Linux (GNOME, KDE o similar)
 
-## Instalación
+## Instalación rápida
 
 ```bash
-# Clonar el repositorio
 git clone https://github.com/yhas1984/WidgetFinanzas.git
 cd WidgetFinanzas
-
-# Crear y activar entorno virtual (opcional pero recomendado)
-python -m venv myenv
-source myenv/bin/activate
-
-# Instalar dependencias
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-```
-
-## Uso
-
-```bash
 python crypto_widget.py
 ```
 
-El widget aparecerá en la parte superior de la pantalla, centrado horizontalmente.
-
 ## Configuración
 
-Editar `config.json`:
+Edita `config.json` para agregar o quitar activos:
 
 ```json
 {
@@ -66,27 +57,37 @@ Editar `config.json`:
 }
 ```
 
-| Campo | Descripción |
-|-------|-------------|
-| `currency` | Moneda de cotización |
-| `update_interval_seconds` | Intervalo de actualización en segundos |
-| `run_on_startup` | Auto-inicio al iniciar sesión |
-| `assets` | Lista de activos a mostrar |
-| `assets[].id` | Identificador único |
-| `assets[].symbol` | Símbolo mostrado en pantalla |
-| `assets[].color` | Color hex del texto |
-| `assets[].yf_symbol` | Símbolo de Yahoo Finance |
+### Campos
 
-### Activos compatibles
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `currency` | string | Moneda de cotización (usd, eur, etc.) |
+| `update_interval_seconds` | int | Segundos entre actualizaciones |
+| `run_on_startup` | bool | Auto-inicio al iniciar sesión |
+| `assets` | array | Lista de activos a mostrar |
+| `assets[].id` | string | Identificador único del activo |
+| `assets[].symbol` | string | Texto mostrado en el ticker |
+| `assets[].color` | string | Color hex del texto |
+| `assets[].yf_symbol` | string | Símbolo de Yahoo Finance |
 
-Cualquier símbolo de [Yahoo Finance](https://finance.yahoo.com/lookup):
-- Criptos: `BTC-USD`, `ETH-USD`, `HBAR-USD`
-- Índices: `^GSPC` (S&P500), `^IXIC` (NASDAQ), `^DJI` (Dow Jones)
-- Commodities: `GC=F` (oro), `CL=F` (petróleo)
-- Forex: `EURUSD=X`, `USDEUR=X`
-- Acciones: `AAPL`, `TSLA`, `MSFT`
+### Activos de ejemplo
 
-## Compilar ejecutable (opcional)
+| Tipo | Símbolo | Yahoo Finance |
+|------|---------|---------------|
+| Crypto | BTC | `BTC-USD` |
+| Crypto | ETH | `ETH-USD` |
+| Crypto | HBAR | `HBAR-USD` |
+| Índice | S&P500 | `^GSPC` |
+| Índice | NASDAQ | `^IXIC` |
+| Commodity | Oro | `GC=F` |
+| Commodity | Petróleo | `CL=F` |
+| Forex | EUR/USD | `EURUSD=X` |
+| Acción | Apple | `AAPL` |
+| Acción | Tesla | `TSLA` |
+
+Cualquier símbolo de [Yahoo Finance](https://finance.yahoo.com/lookup) es compatible.
+
+## Compilar ejecutable
 
 ```bash
 pip install pyinstaller
@@ -95,16 +96,36 @@ pyinstaller CryptoWidget.spec
 
 El ejecutable se generará en `dist/CryptoWidget/`.
 
-## Estructura del proyecto
+## Estructura
 
 ```
 WidgetFinanzas/
 ├── crypto_widget.py      # Aplicación principal
 ├── config.json           # Configuración de activos
-├── requirements.txt      # Dependencias Python
-├── CryptoWidget.spec     # PyInstaller spec
-├── icon.png              # Icono de la aplicación
+├── requirements.txt      # Dependencias
+├── CryptoWidget.spec     # Spec de PyInstaller
+├── icon.png              # Icono
 └── .gitignore
+```
+
+## Atajos de teclado
+
+| Tecla | Acción |
+|-------|--------|
+| `ESC` | Cerrar widget |
+| `Arrastrar` | Mover widget |
+
+## Solución de problemas
+
+**El widget no aparece:**
+```bash
+# Verificar que XCB esté instalado
+sudo apt install libxcb-xinerama0
+```
+
+**Error de yfinance:**
+```bash
+pip install --upgrade yfinance
 ```
 
 ## Licencia
