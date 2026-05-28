@@ -1,11 +1,13 @@
-import os
 import sys
+import os
 import json
 import yfinance as yf
 from datetime import datetime, timedelta
 from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QWidget, QVBoxLayout
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QPropertyAnimation, QEasingCurve
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QPropertyAnimation, QEasingCurve, QPoint
 from PyQt5.QtGui import QPainter, QColor, QIcon
+
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 # ---------------- Worker de datos ----------------
 class DataWorker(QObject):
@@ -36,8 +38,7 @@ class DataWorker(QObject):
                 group_by="ticker",
                 auto_adjust=True,
                 prepost=True,
-                threads=True,
-                proxy=None
+                threads=True
             )
             
             results = []
@@ -282,6 +283,8 @@ class CryptoWidget(QMainWindow):
         self.worker = None
         self.thread = None
         self.previous_prices = {}  # Para detectar cambios
+        self.drag_position = QPoint()
+        self.is_dragging = False
         self.init_ui()
         self.load_styles()
         self.trigger_update()
@@ -291,7 +294,12 @@ class CryptoWidget(QMainWindow):
 
     def check_autostart(self):
         """Configura el escritorio y el inicio automático en Linux"""
+        # if not self.config.get("run_on_startup", False):
+        #    return
+
         try:
+            import os
+            import sys
             
             # Solo para Linux
             if sys.platform != "linux":
@@ -358,8 +366,9 @@ NoDisplay=false
 
     def init_ui(self):
         self.setWindowTitle("Ticker")
-        # Integrado al escritorio: transparente, fijo y al fondo
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnBottomHint | Qt.Tool)
+        # Integrado al escritorio: transparente, fijo y al fondo (Dock nativo)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnBottomHint)
+        self.setAttribute(Qt.WA_X11NetWmWindowTypeDock, True)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
         # Set Application Icon
@@ -483,6 +492,22 @@ NoDisplay=false
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.close()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+            self.is_dragging = True
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self.is_dragging:
+            self.move(event.globalPos() - self.drag_position)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = False
+            event.accept()
 
 
 def main():
