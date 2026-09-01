@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['crypto_widget.py'],
+    ['crypto_widgetV5.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.png', '.')],
+    datas=[('icon.png', '.'), ('config.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
