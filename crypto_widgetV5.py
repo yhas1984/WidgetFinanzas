@@ -347,7 +347,7 @@ Exec={exec_cmd}
 Path={app_dir}
 {desktop_img_line}Terminal=false
 Hidden=false
-NoDisplay=false
+NoDisplay=true
 """
             
             # 1. Escribir en ~/.local/share/applications (Para el menú)
