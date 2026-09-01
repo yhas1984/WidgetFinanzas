@@ -2,6 +2,10 @@
   "currency": "usd",
   "update_interval_seconds": 60,
   "run_on_startup": true,
+  "desktop_mode": true,
+  "position": "top-center",
+  "window_width": 1000,
+  "window_height": 50,
   "assets": [
     {
       "id": "bitcoin",
@@ -59,5 +63,19 @@
       "type": "yahoo",
       "yf_symbol": "USDEUR=X"
     }
-  ]
+  ],
+  "icons": {
+    "BTC": "₿",
+    "ETH": "Ξ",
+    "HBAR": "ℏ",
+    "S&P500": "📈",
+    "GOLD": "🥇",
+    "OIL": "🛢️",
+    "NASDAQ": "🏛️",
+    "DOW": "📊",
+    "TSLA": "🚗",
+    "AAPL": "🍎",
+    "EUR/USD": "💱",
+    "USD/EUR": "💰"
+  }
 }

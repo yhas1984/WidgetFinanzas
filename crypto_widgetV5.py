@@ -280,6 +280,8 @@ class CryptoWidget(QMainWindow):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.window_width = int(self.config.get("window_width", 1000) or 1000)
+        self.window_height = int(self.config.get("window_height", 50) or 50)
         self.worker = None
         self.thread = None
         self.previous_prices = {}  # Para detectar cambios
@@ -294,8 +296,8 @@ class CryptoWidget(QMainWindow):
 
     def check_autostart(self):
         """Configura el escritorio y el inicio automático en Linux"""
-        # if not self.config.get("run_on_startup", False):
-        #    return
+        if not self.config.get("run_on_startup", False):
+            return
 
         try:
             import os
@@ -366,8 +368,11 @@ NoDisplay=false
 
     def init_ui(self):
         self.setWindowTitle("Ticker")
-        # Integrado al escritorio: transparente, fijo y al fondo (Dock nativo)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnBottomHint)
+        # Integrado al escritorio: transparente; el modo escritorio es configurable
+        flags = Qt.FramelessWindowHint
+        if self.config.get("desktop_mode", True):
+            flags |= Qt.WindowStaysOnBottomHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_X11NetWmWindowTypeDock, True)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
@@ -381,7 +386,7 @@ NoDisplay=false
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
-        self.setFixedSize(1000, 50)
+        self.setFixedSize(self.window_width, self.window_height)
 
         main = QWidget(self)
         main.setAttribute(Qt.WA_TranslucentBackground)
@@ -391,6 +396,7 @@ NoDisplay=false
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.scroll_label = ScrollingLabel()
+        self.scroll_label.icons.update(self.config.get("icons", {}))
         self.scroll_label.setObjectName("scroll_label")
         layout.addWidget(self.scroll_label)
         
@@ -535,7 +541,18 @@ def main():
     app = QApplication(sys.argv)
     w = CryptoWidget(config)
     screen = app.primaryScreen().availableGeometry()
-    w.move((screen.width() - w.width()) // 2, 30)
+    position = config.get("position", "top-center")
+    margin = 20
+    positions = {
+        "top-left": (screen.left() + margin, screen.top() + margin),
+        "top-center": (screen.left() + (screen.width() - w.width()) // 2, screen.top() + margin),
+        "top-right": (screen.right() - w.width() - margin, screen.top() + margin),
+        "bottom-left": (screen.left() + margin, screen.bottom() - w.height() - margin),
+        "bottom-center": (screen.left() + (screen.width() - w.width()) // 2, screen.bottom() - w.height() - margin),
+        "bottom-right": (screen.right() - w.width() - margin, screen.bottom() - w.height() - margin),
+    }
+    x, y = positions.get(position, positions["top-center"])
+    w.move(x, y)
     w.show()
     sys.exit(app.exec_())
 

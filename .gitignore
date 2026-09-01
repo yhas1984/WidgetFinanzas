@@ -10,6 +10,14 @@ build/
 *.spec
 !CryptoWidget.spec
 
+# Tests / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Local config overrides
+config.local.json
+
 # Virtual environment
 myenv/
 .venv/

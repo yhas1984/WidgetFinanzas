@@ -1,50 +1,71 @@
 # WidgetFinanzas
 
-Widget de escritorio para Linux que muestra cotizaciones en tiempo real de criptomonedas, índices bursátiles, commodities y forex en una barra scrolleable transparente integrada al escritorio.
+Widget de escritorio para Linux que muestra cotizaciones en tiempo real de criptomonedas, índices bursátiles, commodities y forex en una barra scrolleable transparente.
 
-![WidgetFinanzas](icon.png)
+![screenshot](icon.png)
 
 ## Características
 
-| Feature | Descripción |
-|---------|-------------|
-| **Ticker animado** | Precios con scroll infinito horizontal |
-| **Multi-activo** | Criptos, índices, commodities, forex y acciones |
-| **Colores dinámicos** | Verde (subida), rojo (bajada), flechas según magnitud |
-| **Parpadeo** | Alerta visual en cambios >1% |
-| **Arrastrable** | Mover el widget con el ratón a cualquier posición |
-| **Dock nativo** | Se integra al gestor de ventanas como dock |
-| **Transparente** | Fondo translúcido, siempre al fondo |
-| **Auto-inicio** | Se ejecuta automáticamente al iniciar sesión |
-| **Configurable** | Editar `config.json` para personalizar activos |
+- **Visualización tipo ticker** — precios se desplazan horizontalmente con scroll infinito
+- **Soporte multi-activo** — criptos, índices, commodities, forex, acciones
+- **Actualización automática** — intervalo configurable con retry y backoff exponencial
+- **Caché local** — si la API falla, muestra los últimos datos conocidos con indicador ⚠️
+- **Código de colores** — cambios de precio con colores y flechas según magnitud
+- **Efecto de parpadeo** — cuando un activo tiene un cambio significativo (>1%)
+- **Transparente y siempre al fondo** — se integra al escritorio sin molestar
+- **Posición configurable** — top-left, top-center, top-right, bottom-left, bottom-center, bottom-right
+- **Menú contextual / tray icon** — click derecho para actualizar, pausar scroll o salir
+- **Auto-inicio** — se configura automáticamente en el arranque de sesión (Linux)
+- **Logging estructurado** — trazas con timestamps y niveles (DEBUG/INFO/ERROR)
+- **Validación de config** — detecta errores en `config.json` antes de arrancar
+- **Tests unitarios** — cobertura de formato, colores y validación
 
 ## Requisitos
 
-- Python 3.8+
+- Python 3.10+
 - PyQt5
-- yfinance
-- Linux (GNOME, KDE o similar)
+- yfinance (con pandas, numpy, requests, lxml)
+- Entorno de escritorio Linux
 
-## Instalación rápida
+## Instalación
 
 ```bash
+# Clonar
 git clone https://github.com/yhas1984/WidgetFinanzas.git
 cd WidgetFinanzas
-python -m venv venv
-source venv/bin/activate
+
+# Entorno virtual (recomendado)
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Instalar dependencias
 pip install -r requirements.txt
+```
+
+## Uso
+
+```bash
 python crypto_widget.py
+```
+
+O desde el paquete:
+
+```bash
+python -m src.main
 ```
 
 ## Configuración
 
-Edita `config.json` para agregar o quitar activos:
+Editar `config.json`:
 
 ```json
 {
   "currency": "usd",
   "update_interval_seconds": 60,
   "run_on_startup": true,
+  "position": "top-center",
+  "window_width": 1000,
+  "window_height": 50,
   "assets": [
     {
       "id": "bitcoin",
@@ -53,39 +74,34 @@ Edita `config.json` para agregar o quitar activos:
       "type": "crypto",
       "yf_symbol": "BTC-USD"
     }
-  ]
+  ],
+  "icons": {
+    "BTC": "₿",
+    "ETH": "Ξ"
+  }
 }
 ```
 
-### Campos
+| Campo | Descripción |
+|-------|-------------|
+| `currency` | Moneda de cotización |
+| `update_interval_seconds` | Intervalo de actualización |
+| `run_on_startup` | Auto-inicio en Linux |
+| `position` | `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, `bottom-right` |
+| `window_width` | Ancho del widget (px) |
+| `window_height` | Alto del widget (px) |
+| `assets` | Lista de activos |
+| `icons` | Diccionario de iconos por símbolo |
 
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `currency` | string | Moneda de cotización (usd, eur, etc.) |
-| `update_interval_seconds` | int | Segundos entre actualizaciones |
-| `run_on_startup` | bool | Auto-inicio al iniciar sesión |
-| `assets` | array | Lista de activos a mostrar |
-| `assets[].id` | string | Identificador único del activo |
-| `assets[].symbol` | string | Texto mostrado en el ticker |
-| `assets[].color` | string | Color hex del texto |
-| `assets[].yf_symbol` | string | Símbolo de Yahoo Finance |
+### Activos compatibles
 
-### Activos de ejemplo
+Cualquier símbolo de [Yahoo Finance](https://finance.yahoo.com/lookup).
 
-| Tipo | Símbolo | Yahoo Finance |
-|------|---------|---------------|
-| Crypto | BTC | `BTC-USD` |
-| Crypto | ETH | `ETH-USD` |
-| Crypto | HBAR | `HBAR-USD` |
-| Índice | S&P500 | `^GSPC` |
-| Índice | NASDAQ | `^IXIC` |
-| Commodity | Oro | `GC=F` |
-| Commodity | Petróleo | `CL=F` |
-| Forex | EUR/USD | `EURUSD=X` |
-| Acción | Apple | `AAPL` |
-| Acción | Tesla | `TSLA` |
+## Tests
 
-Cualquier símbolo de [Yahoo Finance](https://finance.yahoo.com/lookup) es compatible.
+```bash
+pytest tests/ -v
+```
 
 ## Compilar ejecutable
 
@@ -94,38 +110,29 @@ pip install pyinstaller
 pyinstaller CryptoWidget.spec
 ```
 
-El ejecutable se generará en `dist/CryptoWidget/`.
-
-## Estructura
+## Estructura del proyecto
 
 ```
 WidgetFinanzas/
-├── crypto_widget.py      # Aplicación principal
-├── config.json           # Configuración de activos
-├── requirements.txt      # Dependencias
-├── CryptoWidget.spec     # Spec de PyInstaller
-├── icon.png              # Icono
-└── .gitignore
-```
-
-## Atajos de teclado
-
-| Tecla | Acción |
-|-------|--------|
-| `ESC` | Cerrar widget |
-| `Arrastrar` | Mover widget |
-
-## Solución de problemas
-
-**El widget no aparece:**
-```bash
-# Verificar que XCB esté instalado
-sudo apt install libxcb-xinerama0
-```
-
-**Error de yfinance:**
-```bash
-pip install --upgrade yfinance
+├── src/
+│   ├── main.py              # Entry point
+│   ├── config.py            # Carga y validación de config
+│   ├── constants.py         # Constantes centralizadas
+│   ├── data_fetcher.py      # Worker de Yahoo Finance
+│   ├── autostart.py         # Lógica .desktop
+│   ├── utils.py             # Helpers y logging
+│   └── ui/
+│       ├── widgets.py       # ScrollingLabel
+│       ├── main_window.py   # CryptoWidget
+│       └── tray_menu.py     # Menú contextual
+├── tests/
+│   ├── test_config.py
+│   └── test_formatting.py
+├── crypto_widget.py         # Wrapper
+├── config.json
+├── requirements.txt
+├── CryptoWidget.spec
+└── icon.png
 ```
 
 ## Licencia
