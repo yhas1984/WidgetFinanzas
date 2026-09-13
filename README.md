@@ -135,6 +135,23 @@ WidgetFinanzas/
 └── icon.png
 ```
 
+## Instalación desde `.deb`
+
+Los paquetes compilados se publican como assets en la sección [Releases](https://github.com/yhas1984/WidgetFinanzas/releases). Descarga `widget-finanzas_*_amd64.deb` y ejecuta:
+
+```bash
+sudo apt install ./widget-finanzas_*_amd64.deb
+```
+
+## Compilar el `.deb`
+
+```bash
+python -m pip install -r requirements.txt
+bash packaging/build-deb.sh 5.0.2
+```
+
+Al crear un tag `v5.0.2`, GitHub Actions compila el paquete y lo publica automáticamente como asset del release.
+
 ## Licencia
 
 MIT
