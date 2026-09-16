@@ -1,173 +1,397 @@
-import sys
-import os
-import json
-import yfinance as yf
-from datetime import datetime, timedelta
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QWidget, QVBoxLayout
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QPropertyAnimation, QEasingCurve, QPoint
-from PyQt5.QtGui import QPainter, QColor, QIcon
+#!/usr/bin/env python3
 
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+import json
+import logging
+import math
+import os
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+import yfinance as yf
+from PyQt5.QtCore import QObject, QPoint, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPainter
+from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow, QVBoxLayout, QWidget
+
+APP_NAME = "Widget Finanzas"
+APP_SLUG = "widget-finanzas"
+VERSION = "5.0.3"
+VALID_POSITIONS = {
+    "top-left", "top-center", "top-right",
+    "bottom-left", "bottom-center", "bottom-right",
+}
+DEFAULT_CONFIG = {
+    "currency": "usd",
+    "update_interval_seconds": 60,
+    "run_on_startup": False,
+    "desktop_mode": True,
+    "position": "top-center",
+    "window_width": 1000,
+    "window_height": 50,
+    "assets": [],
+    "icons": {},
+}
+
+logger = logging.getLogger(APP_SLUG)
+
+
+def _xdg_dir(env_name, fallback):
+    configured = os.environ.get(env_name)
+    return Path(configured).expanduser() if configured else Path.home() / fallback
+
+
+def app_paths():
+    """Devuelve rutas por usuario sin escribir dentro de /opt."""
+    return {
+        "config": _xdg_dir("XDG_CONFIG_HOME", ".config") / APP_SLUG,
+        "cache": _xdg_dir("XDG_CACHE_HOME", ".cache") / APP_SLUG,
+        "state": _xdg_dir("XDG_STATE_HOME", ".local/state") / APP_SLUG,
+    }
+
+
+def setup_logging(log_dir):
+    if logger.handlers:
+        return
+    logger.setLevel(logging.INFO)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_dir / "widget-finanzas.log",
+            maxBytes=512_000,
+            backupCount=2,
+            encoding="utf-8",
+        )
+    except OSError:
+        handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s"
+    ))
+    logger.addHandler(handler)
+
+
+def read_json(path, default=None):
+    try:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else (default or {})
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("No se pudo leer %s: %s", path, exc)
+        return default or {}
+
+
+def write_json_atomic(path, value):
+    """Escribe JSON de forma atómica y tolera sistemas de archivos de solo lectura."""
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(value, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, path)
+        except Exception:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
+        return True
+    except OSError as exc:
+        logger.warning("No se pudo escribir %s: %s", path, exc)
+        return False
+
+
+def _validated_int(value, default, minimum, maximum, field, warnings):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        warnings.append(f"{field} debe ser un número entero")
+        return default
+    if parsed < minimum or parsed > maximum:
+        warnings.append(f"{field} debe estar entre {minimum} y {maximum}")
+        return default
+    return parsed
+
+
+def validate_config(raw):
+    """Normaliza configuración no confiable sin impedir que arranque el widget."""
+    raw = raw if isinstance(raw, dict) else {}
+    config = dict(DEFAULT_CONFIG)
+    warnings = []
+
+    currency = raw.get("currency", config["currency"])
+    if isinstance(currency, str) and 2 <= len(currency.strip()) <= 5:
+        config["currency"] = currency.strip().lower()
+    else:
+        warnings.append("currency no es válida")
+
+    config["update_interval_seconds"] = _validated_int(
+        raw.get("update_interval_seconds", config["update_interval_seconds"]),
+        config["update_interval_seconds"], 30, 86_400,
+        "update_interval_seconds", warnings,
+    )
+    config["window_width"] = _validated_int(
+        raw.get("window_width", config["window_width"]),
+        config["window_width"], 240, 7680, "window_width", warnings,
+    )
+    config["window_height"] = _validated_int(
+        raw.get("window_height", config["window_height"]),
+        config["window_height"], 32, 1080, "window_height", warnings,
+    )
+    config["run_on_startup"] = bool(raw.get("run_on_startup", False))
+    config["desktop_mode"] = bool(raw.get("desktop_mode", True))
+
+    position = raw.get("position", config["position"])
+    if position in VALID_POSITIONS:
+        config["position"] = position
+    else:
+        warnings.append("position no es válida")
+
+    icons = raw.get("icons", {})
+    config["icons"] = {
+        str(key): str(value) for key, value in icons.items()
+    } if isinstance(icons, dict) else {}
+
+    assets = raw.get("assets", [])
+    if not isinstance(assets, list):
+        warnings.append("assets debe ser una lista")
+        assets = []
+    valid_assets = []
+    seen_ids = set()
+    for index, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            warnings.append(f"assets[{index}] no es un objeto")
+            continue
+        required = ("id", "symbol", "yf_symbol")
+        if any(not isinstance(asset.get(key), str) or not asset[key].strip() for key in required):
+            warnings.append(f"assets[{index}] no tiene id, symbol o yf_symbol válido")
+            continue
+        if asset["id"] in seen_ids:
+            warnings.append(f"id duplicado: {asset['id']}")
+            continue
+        color = asset.get("color", "#FFFFFF")
+        if not QColor(str(color)).isValid():
+            warnings.append(f"color no válido para {asset['id']}")
+            color = "#FFFFFF"
+        normalized = dict(asset)
+        normalized["color"] = str(color)
+        try:
+            normalized["scale"] = float(asset.get("scale", 1))
+            if not math.isfinite(normalized["scale"]) or normalized["scale"] <= 0:
+                raise ValueError("scale debe ser positiva")
+        except (TypeError, ValueError):
+            normalized["scale"] = 1.0
+            warnings.append(f"scale no válida para {asset['id']}")
+        seen_ids.add(asset["id"])
+        valid_assets.append(normalized)
+    config["assets"] = valid_assets
+    return config, warnings
+
+
+def load_config(application_path, user_config_path):
+    bundled = read_json(Path(application_path) / "config.json", {})
+    user = read_json(user_config_path, {}) if Path(user_config_path).exists() else {}
+    merged = dict(bundled)
+    merged.update(user)
+    config, warnings = validate_config(merged)
+    for message in warnings:
+        logger.warning("Configuración: %s", message)
+    return config
+
+
+def format_price(price, asset, fallback_currency="usd"):
+    quote_currency = asset.get("quote_currency", fallback_currency)
+    symbols = {"usd": "$", "eur": "€", "gbp": "£", "jpy": "¥"}
+    prefix = "" if quote_currency in (None, "", "points") else symbols.get(
+        str(quote_currency).lower(), f"{str(quote_currency).upper()} "
+    )
+    if price >= 1000:
+        return f"{prefix}{price:,.0f}"
+    if price >= 1:
+        return f"{prefix}{price:,.2f}"
+    return f"{prefix}{price:.4f}"
 
 # ---------------- Worker de datos ----------------
 class DataWorker(QObject):
     data_updated = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
+    finished = pyqtSignal()
 
-    def __init__(self, assets, currency):
+    def __init__(self, assets, currency, cache_path):
         super().__init__()
         self.assets = assets
         self.currency = currency
+        self.cache_path = Path(cache_path)
 
     def _fetch_yfinance_data(self, symbols_list):
-        """Obtiene datos de múltiples símbolos usando yfinance"""
-        try:
-            # Crear string con todos los símbolos
-            symbols_str = " ".join(symbols_list)
-            
-            # Obtener datos de los últimos 5 días para calcular cambio
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=5)
-            
-            # Descargar datos
-            data = yf.download(
-                symbols_str,
-                start=start_date,
-                end=end_date,
-                interval="1d",
-                group_by="ticker",
-                auto_adjust=True,
-                prepost=True,
-                threads=True
-            )
-            
-            results = []
-            
-            for symbol in symbols_list:
-                try:
-                    # Si solo hay un símbolo, la estructura es diferente
-                    if len(symbols_list) == 1:
-                        symbol_data = data
-                    else:
-                        symbol_data = data[symbol] if symbol in data.columns.get_level_values(0) else None
-                    
-                    if symbol_data is None or symbol_data.empty:
-                        print(f"No hay datos para {symbol}")
-                        continue
-                    
-                    # Obtener el precio actual (último close disponible)
-                    closes = symbol_data['Close'].dropna()
-                    if len(closes) == 0:
-                        continue
-                        
-                    current_price = float(closes.iloc[-1])
-                    
-                    # Calcular cambio porcentual (comparar con el día anterior disponible)
-                    change_pct = 0.0
-                    if len(closes) >= 2:
-                        previous_price = float(closes.iloc[-2])
-                        if previous_price > 0:
-                            change_pct = ((current_price - previous_price) / previous_price) * 100
-                    
-                    results.append({
-                        "symbol": symbol,
-                        "current_price": current_price,
-                        "price_change_percentage_24h": change_pct
-                    })
-                    
-                except Exception as e:
-                    print(f"Error procesando {symbol}: {e}")
-                    continue
-            
-            return results
-            
-        except Exception as e:
-            print(f"Error en yfinance: {e}")
-            return []
+        """Obtiene los últimos cierres en una sola solicitud limitada."""
+        symbols_list = list(dict.fromkeys(symbols_list))
+        symbols_str = " ".join(symbols_list)
+        last_error = None
+        for attempt in range(2):
+            if QThread.currentThread().isInterruptionRequested():
+                return []
+            try:
+                data = yf.download(
+                    symbols_str,
+                    period="5d",
+                    interval="1d",
+                    group_by="ticker",
+                    auto_adjust=True,
+                    prepost=True,
+                    threads=True,
+                    progress=False,
+                    timeout=8,
+                )
+                if data is not None and not data.empty:
+                    break
+                last_error = RuntimeError("Yahoo Finance devolvió una respuesta vacía")
+            except Exception as exc:  # noqa: BLE001 - frontera de la librería de red
+                last_error = exc
+            if attempt == 0:
+                time.sleep(1.0)
+        else:
+            raise RuntimeError(str(last_error or "No se recibieron cotizaciones"))
 
-    def _get_ticker_info(self, symbol):
-        """Obtiene información adicional de un ticker específico"""
-        try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            
-            # Intentar obtener precio actual de diferentes fuentes
-            current_price = (
-                info.get('regularMarketPrice') or 
-                info.get('currentPrice') or 
-                info.get('previousClose') or 0.0
-            )
-            
-            # Intentar obtener cambio porcentual
-            change_pct = (
-                info.get('regularMarketChangePercent') or
-                info.get('changePercent') or 0.0
-            )
-            
-            return {
-                "symbol": symbol,
-                "current_price": float(current_price),
-                "price_change_percentage_24h": float(change_pct)
-            }
-            
-        except Exception as e:
-            print(f"Error obteniendo info de {symbol}: {e}")
-            return None
+        results = []
+        for symbol in symbols_list:
+            try:
+                top_level = data.columns.get_level_values(0)
+                if len(symbols_list) == 1 and "Close" in top_level:
+                    symbol_data = data
+                else:
+                    symbol_data = data[symbol] if symbol in top_level else None
+                if symbol_data is None or symbol_data.empty:
+                    logger.warning("Yahoo Finance no devolvió datos para %s", symbol)
+                    continue
+                closes = symbol_data["Close"].dropna()
+                if getattr(closes, "ndim", 1) > 1:
+                    closes = closes.iloc[:, 0].dropna()
+                if closes.empty:
+                    continue
+                current_price = float(closes.iloc[-1])
+                if not math.isfinite(current_price) or current_price <= 0:
+                    continue
+                change_pct = 0.0
+                if len(closes) >= 2:
+                    previous_price = float(closes.iloc[-2])
+                    if math.isfinite(previous_price) and previous_price > 0:
+                        change_pct = ((current_price - previous_price) / previous_price) * 100
+                results.append({
+                    "symbol": symbol,
+                    "current_price": current_price,
+                    "price_change_percentage_24h": change_pct,
+                })
+            except (KeyError, TypeError, ValueError, IndexError) as exc:
+                logger.warning("No se pudo procesar %s: %s", symbol, exc)
+        return results
+
+    def _cached_prices(self):
+        document = read_json(self.cache_path, {})
+        raw_prices = document.get("prices", {})
+        if not isinstance(raw_prices, dict):
+            return {}
+        valid = {}
+        for asset_id, item in raw_prices.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                price = float(item["current_price"])
+                change = float(item.get("price_change_percentage_24h", 0.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(price) and price > 0 and math.isfinite(change):
+                cached = dict(item)
+                cached["current_price"] = price
+                cached["price_change_percentage_24h"] = change
+                cached["cached"] = True
+                valid[str(asset_id)] = cached
+        return valid
+
+    def _store_prices(self, fresh_prices, cached_prices):
+        merged = {key: dict(value) for key, value in cached_prices.items()}
+        now = datetime.now(timezone.utc).isoformat()
+        for item in fresh_prices:
+            stored = dict(item)
+            stored.pop("cached", None)
+            stored["updated_at"] = now
+            merged[item["id"]] = stored
+        write_json_atomic(self.cache_path, {
+            "version": 1,
+            "updated_at": now,
+            "prices": merged,
+        })
+
+    def _result_from_cache(self, cached_prices, error=None):
+        prices = []
+        for asset in self.assets:
+            cached = cached_prices.get(asset["id"])
+            if cached:
+                item = dict(cached)
+                item["id"] = asset["id"]
+                item["symbol"] = asset["symbol"]
+                item["cached"] = True
+                prices.append(item)
+        return {"prices": prices, "stale": bool(prices), "error": error}
 
     def run(self):
+        cached_prices = self._cached_prices()
         try:
-            result = {"prices": []}
-            
-            # Recopilar todos los símbolos
-            all_symbols = []
-            symbol_to_asset = {}  # Mapeo símbolo -> configuración del asset
-            
-            for asset in self.assets:
-                symbol = asset["yf_symbol"]
-                all_symbols.append(symbol)
-                symbol_to_asset[symbol] = asset
-            
+            all_symbols = [asset["yf_symbol"] for asset in self.assets]
             if not all_symbols:
-                self.data_updated.emit(result)
+                self.data_updated.emit({"prices": [], "stale": False, "error": None})
                 return
-            
-            # Obtener datos usando el método batch (más eficiente)
-            yf_data = self._fetch_yfinance_data(all_symbols)
-            
-            # Si el método batch falla, intentar uno por uno
-            if not yf_data:
-                print("Método batch falló, intentando uno por uno...")
-                for symbol in all_symbols:
-                    ticker_data = self._get_ticker_info(symbol)
-                    if ticker_data:
-                        yf_data.append(ticker_data)
-            
-            # Procesar resultados y aplicar configuraciones
-            for data_item in yf_data:
-                symbol = data_item["symbol"]
-                asset_config = symbol_to_asset.get(symbol)
-                
-                if not asset_config:
-                    continue
-                
-                price = data_item["current_price"]
-                change_pct = data_item["price_change_percentage_24h"]
-                
-                # Aplicar escala si está configurada
-                scale = float(asset_config.get("scale", 1) or 1)
-                price *= scale
-                
-                result["prices"].append({
-                    "id": asset_config["id"],
-                    "symbol": asset_config["symbol"],
-                    "current_price": price,
-                    "price_change_percentage_24h": change_pct
-                })
-            
-            self.data_updated.emit(result)
 
-        except Exception as e:
-            self.error_occurred.emit(f"Error: {e}")
+            yf_data = self._fetch_yfinance_data(all_symbols)
+            by_symbol = {item["symbol"]: item for item in yf_data}
+            fresh_prices = []
+            result_prices = []
+            for asset in self.assets:
+                item = by_symbol.get(asset["yf_symbol"])
+                if item:
+                    price = item["current_price"] * float(asset.get("scale", 1.0))
+                    fresh = {
+                        "id": asset["id"],
+                        "symbol": asset["symbol"],
+                        "current_price": price,
+                        "price_change_percentage_24h": item["price_change_percentage_24h"],
+                        "cached": False,
+                    }
+                    fresh_prices.append(fresh)
+                    result_prices.append(fresh)
+                elif asset["id"] in cached_prices:
+                    cached = dict(cached_prices[asset["id"]])
+                    cached["id"] = asset["id"]
+                    cached["symbol"] = asset["symbol"]
+                    cached["cached"] = True
+                    result_prices.append(cached)
+
+            if fresh_prices:
+                self._store_prices(fresh_prices, cached_prices)
+            if not result_prices:
+                self.error_occurred.emit("No se recibieron cotizaciones ni existe caché local")
+            else:
+                self.data_updated.emit({
+                    "prices": result_prices,
+                    "stale": any(item.get("cached") for item in result_prices),
+                    "error": None,
+                })
+        except Exception as exc:  # noqa: BLE001 - protege el hilo y recupera la caché
+            logger.warning("Actualización fallida: %s", exc)
+            cached_result = self._result_from_cache(cached_prices, str(exc))
+            if cached_result["prices"]:
+                self.data_updated.emit(cached_result)
+            else:
+                self.error_occurred.emit(str(exc))
+        finally:
+            self.finished.emit()
 
 # ---------------- Etiqueta scrolleable con efectos ----------------
 class ScrollingLabel(QLabel):
@@ -212,7 +436,7 @@ class ScrollingLabel(QLabel):
         return self.icons.get(symbol, "📋")
 
     def update_text_offset(self):
-        if self.total_width < self.width():
+        if self.total_width <= self.width():
             self.text_offset = 0
         else:
             self.text_offset -= 1
@@ -246,7 +470,7 @@ class ScrollingLabel(QLabel):
         p.setRenderHint(QPainter.Antialiasing)
         p.setFont(self.font())
         y = (self.height() - p.fontMetrics().height()) // 2 + p.fontMetrics().ascent()
-        start_x = self.text_offset if self.total_width >= self.width() else (self.width() - self.total_width) // 2
+        start_x = self.text_offset if self.total_width > self.width() else (self.width() - self.total_width) // 2
         x = start_x
         
         for text, color, segment_id in self.segments:
@@ -277,13 +501,16 @@ class ScrollingLabel(QLabel):
 
 # ---------------- Widget principal ----------------
 class CryptoWidget(QMainWindow):
-    def __init__(self, config):
+    def __init__(self, config, cache_path, state_path):
         super().__init__()
         self.config = config
-        self.window_width = int(self.config.get("window_width", 1000) or 1000)
-        self.window_height = int(self.config.get("window_height", 50) or 50)
+        self.cache_path = Path(cache_path)
+        self.state_path = Path(state_path)
+        self.window_width = self.config["window_width"]
+        self.window_height = self.config["window_height"]
         self.worker = None
         self.thread = None
+        self._closing = False
         self.previous_prices = {}  # Para detectar cambios
         self.drag_position = QPoint()
         self.is_dragging = False
@@ -295,76 +522,67 @@ class CryptoWidget(QMainWindow):
         self.update_timer.start(self.config["update_interval_seconds"] * 1000)
 
     def check_autostart(self):
-        """Configura el escritorio y el inicio automático en Linux"""
+        """Mantiene una sola entrada de autoinicio y elimina launchers heredados."""
+        if sys.platform != "linux":
+            return
+        autostart_dir = _xdg_dir("XDG_CONFIG_HOME", ".config") / "autostart"
+        legacy_autostart = autostart_dir / "crypto_widget.desktop"
+        legacy_application = (
+            _xdg_dir("XDG_DATA_HOME", ".local/share")
+            / "applications" / "crypto_widget.desktop"
+        )
+        current_autostart = autostart_dir / f"{APP_SLUG}.desktop"
+
+        for legacy in (legacy_autostart, legacy_application):
+            try:
+                if legacy.exists() and "Crypto Widget" in legacy.read_text(
+                    encoding="utf-8", errors="ignore"
+                ):
+                    legacy.unlink()
+                    logger.info("Entrada heredada eliminada: %s", legacy)
+            except OSError as exc:
+                logger.warning("No se pudo limpiar %s: %s", legacy, exc)
+
         if not self.config.get("run_on_startup", False):
+            try:
+                current_autostart.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("No se pudo desactivar el autoinicio: %s", exc)
             return
 
-        try:
-            import os
-            import sys
-            
-            # Solo para Linux
-            if sys.platform != "linux":
-                return
+        if getattr(sys, "frozen", False):
+            executable = "/usr/bin/widget-finanzas" if Path(
+                "/usr/bin/widget-finanzas"
+            ).exists() else sys.executable
+            exec_cmd = f'"{executable}"'
+            try_exec = executable
+            icon = APP_SLUG
+        else:
+            script = str(Path(__file__).with_name("crypto_widget.py").resolve())
+            exec_cmd = f'"{sys.executable}" "{script}"'
+            try_exec = sys.executable
+            icon = str(Path(__file__).with_name("icon.png").resolve())
 
-            # Directorios
-            autostart_dir = os.path.expanduser("~/.config/autostart")
-            applications_dir = os.path.expanduser("~/.local/share/applications")
-            
-            for d in [autostart_dir, applications_dir]:
-                if not os.path.exists(d):
-                    os.makedirs(d)
-
-            # Determinar rutas
-            if getattr(sys, 'frozen', False):
-                exec_cmd = f'"{sys.executable}"'
-                app_dir = os.path.dirname(sys.executable)
-            else:
-                exec_cmd = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
-                app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-
-            # Buscar el icono en múltiples ubicaciones
-            possible_icons = [
-                os.path.join(app_dir, "icon.png"),
-                os.path.abspath("icon.png"),
-                os.path.join(os.path.dirname(app_dir), "icon.png") # Un nivel arriba de dist
-            ]
-            
-            icon_path = ""
-            for p in possible_icons:
-                if os.path.exists(p):
-                    icon_path = p
-                    break
-            
-            # Contenido base del archivo .desktop
-            desktop_img_line = f"Icon={icon_path}\n" if icon_path else ""
-            
-            desktop_content = f"""[Desktop Entry]
+        content = f"""[Desktop Entry]
 Type=Application
-Name=Crypto Widget
-Comment=Widget de criptomonedas y acciones
+Name={APP_NAME}
+Comment=Widget de criptomonedas, mercados y divisas
 Exec={exec_cmd}
-Path={app_dir}
-{desktop_img_line}Terminal=false
+TryExec={try_exec}
+Icon={icon}
+Terminal=false
 Hidden=false
 NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-WidgetFinanzas-Managed=true
 """
-            
-            # 1. Escribir en ~/.local/share/applications (Para el menú)
-            app_desktop_path = os.path.join(applications_dir, "crypto_widget.desktop")
-            with open(app_desktop_path, "w") as f:
-                f.write(desktop_content)
-
-            # 2. Escribir en ~/.config/autostart (Para inicio automático)
-            autostart_content = desktop_content + "X-GNOME-Autostart-enabled=true\n"
-            auto_desktop_path = os.path.join(autostart_dir, "crypto_widget.desktop")
-            with open(auto_desktop_path, "w") as f:
-                f.write(autostart_content)
-                
-            print(f"Configuración de escritorio actualizada. Icono: {icon_path}")
-
-        except Exception as e:
-            print(f"Error configurando escritorio: {e}")
+        try:
+            autostart_dir.mkdir(parents=True, exist_ok=True)
+            temporary = current_autostart.with_suffix(".desktop.tmp")
+            temporary.write_text(content, encoding="utf-8")
+            os.replace(temporary, current_autostart)
+        except OSError as exc:
+            logger.warning("No se pudo configurar el autoinicio: %s", exc)
 
     def init_ui(self):
         self.setWindowTitle("Ticker")
@@ -373,15 +591,16 @@ NoDisplay=true
         if self.config.get("desktop_mode", True):
             flags |= Qt.WindowStaysOnBottomHint
         self.setWindowFlags(flags)
-        self.setAttribute(Qt.WA_X11NetWmWindowTypeDock, True)
+        if os.environ.get("XDG_SESSION_TYPE", "").lower() != "wayland":
+            self.setAttribute(Qt.WA_X11NetWmWindowTypeDock, True)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
         # Set Application Icon
         icon_path = "icon.png"
         if getattr(sys, 'frozen', False):
-             icon_path = os.path.join(os.path.dirname(sys.executable), "icon.png")
+            icon_path = os.path.join(os.path.dirname(sys.executable), "icon.png")
         elif os.path.exists(os.path.join(os.path.dirname(__file__), "icon.png")):
-             icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+            icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
 
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
@@ -410,21 +629,40 @@ NoDisplay=true
         """)
 
     def trigger_update(self):
-        if self.thread and self.thread.isRunning():
-            return  # Evitar múltiples threads simultáneos
-            
-        self.worker = DataWorker(
+        if self._closing:
+            return
+        if self.thread is not None:
+            try:
+                if self.thread.isRunning():
+                    return
+            except RuntimeError:
+                self.thread = None
+                self.worker = None
+
+        worker = DataWorker(
             self.config["assets"],
-            self.config["currency"]
+            self.config["currency"],
+            self.cache_path,
         )
-        self.thread = QThread()
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.data_updated.connect(self.update_ui)
-        self.worker.error_occurred.connect(self.show_error)
-        self.worker.data_updated.connect(self.thread.quit)
-        self.worker.error_occurred.connect(self.thread.quit)
-        self.thread.start()
+        thread = QThread()
+        self.worker = worker
+        self.thread = thread
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.data_updated.connect(self.update_ui)
+        worker.error_occurred.connect(self.show_error)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda: self._thread_finished(thread))
+        thread.start()
+
+    def _thread_finished(self, finished_thread):
+        if self.thread is finished_thread:
+            self.thread = None
+            self.worker = None
+        if self._closing:
+            QApplication.instance().quit()
 
     def update_ui(self, data):
         segments = []
@@ -447,9 +685,9 @@ NoDisplay=true
 
             # Detectar cambios significativos para efectos
             asset_id = a["id"]
-            if asset_id in self.previous_prices:
+            if asset_id in self.previous_prices and not d.get("cached"):
                 old_price = self.previous_prices[asset_id]
-                if abs(price - old_price) / old_price > 0.01:  # Cambio >1%
+                if old_price > 0 and abs(price - old_price) / old_price > 0.01:
                     blinking_items.append(f"{asset_id}_price")
                     blinking_items.append(f"{asset_id}_change")
             
@@ -458,13 +696,8 @@ NoDisplay=true
             # Obtener icono
             icon = self.scroll_label.get_icon(a["symbol"])
 
-            # Formato de precio mejorado
-            if price >= 1000:
-                price_str = f"${price:,.0f}"
-            elif price >= 1:
-                price_str = f"${price:,.2f}"
-            else:
-                price_str = f"${price:.4f}"
+            price_str = format_price(price, a, self.config["currency"])
+            stale_prefix = "⚠ " if d.get("cached") else ""
             
             # Determinar color y flecha basado en cambio
             if abs(chg) >= 5.0:  # Cambio significativo >= 5%
@@ -482,7 +715,7 @@ NoDisplay=true
 
             segments.extend([
                 ("   |   ", "#555", None),
-                (f"{icon} {a['symbol']}: {price_str} ", a["color"], f"{asset_id}_price"),
+                (f"{stale_prefix}{icon} {a['symbol']}: {price_str} ", a["color"], f"{asset_id}_price"),
                 (f"{arrow} {abs(chg):.2f}%", col, f"{asset_id}_change"),
             ])
 
@@ -492,8 +725,8 @@ NoDisplay=true
             self.scroll_label.set_status_text("No se pudieron cargar datos", "#FF4500")
 
     def show_error(self, msg):
-        print(msg)
-        self.scroll_label.set_status_text("Error al cargar datos", "#FF4500")
+        logger.error("Error al actualizar: %s", msg)
+        self.scroll_label.set_status_text("Sin conexión · sin datos en caché", "#FF4500")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -513,45 +746,105 @@ NoDisplay=true
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.is_dragging = False
+            self.save_position()
             event.accept()
 
+    def save_position(self):
+        screen = self.screen()
+        write_json_atomic(self.state_path, {
+            "version": 1,
+            "x": self.x(),
+            "y": self.y(),
+            "screen": screen.name() if screen else "",
+        })
 
-def main():
+    def closeEvent(self, event):
+        self.save_position()
+        self.update_timer.stop()
+        self.scroll_label.timer.stop()
+        self.scroll_label.blink_timer.stop()
+        running = False
+        if self.thread is not None:
+            try:
+                running = self.thread.isRunning()
+            except RuntimeError:
+                self.thread = None
+                self.worker = None
+        if running:
+            self._closing = True
+            self.thread.requestInterruption()
+            self.hide()
+            event.ignore()
+            return
+        event.accept()
+
+
+def initial_position(app, widget, config, state_path):
+    state = read_json(state_path, {})
     try:
-        # Buscar config.json en el mismo directorio que el ejecutable/script
-        if getattr(sys, 'frozen', False):
-            application_path = os.path.dirname(sys.executable)
-        else:
-            application_path = os.path.dirname(os.path.abspath(__file__))
-            
-        config_path = os.path.join(application_path, "config.json")
-        
-        with open(config_path, "r") as f:
-            config = json.load(f)
-    except Exception as e:
-        print(f"Error con 'config.json': {e}")
-        # Configuración por defecto si falla
-        config = {
-            "currency": "usd",
-            "update_interval_seconds": 60,
-            "run_on_startup": False,
-            "assets": []
-        }
+        saved_x = int(state["x"])
+        saved_y = int(state["y"])
+    except (KeyError, TypeError, ValueError):
+        saved_x = saved_y = None
 
-    app = QApplication(sys.argv)
-    w = CryptoWidget(config)
+    if saved_x is not None:
+        target_screen = next(
+            (screen for screen in app.screens() if screen.name() == state.get("screen")),
+            None,
+        )
+        if target_screen is None:
+            target_screen = app.screenAt(QPoint(saved_x, saved_y))
+        if target_screen is not None:
+            geometry = target_screen.availableGeometry()
+            max_x = max(geometry.left(), geometry.right() - widget.width() + 1)
+            max_y = max(geometry.top(), geometry.bottom() - widget.height() + 1)
+            x = min(max(saved_x, geometry.left()), max_x)
+            y = min(max(saved_y, geometry.top()), max_y)
+            return x, y
+
     screen = app.primaryScreen().availableGeometry()
-    position = config.get("position", "top-center")
+    position = config["position"]
     margin = 20
     positions = {
         "top-left": (screen.left() + margin, screen.top() + margin),
-        "top-center": (screen.left() + (screen.width() - w.width()) // 2, screen.top() + margin),
-        "top-right": (screen.right() - w.width() - margin, screen.top() + margin),
-        "bottom-left": (screen.left() + margin, screen.bottom() - w.height() - margin),
-        "bottom-center": (screen.left() + (screen.width() - w.width()) // 2, screen.bottom() - w.height() - margin),
-        "bottom-right": (screen.right() - w.width() - margin, screen.bottom() - w.height() - margin),
+        "top-center": (screen.left() + (screen.width() - widget.width()) // 2, screen.top() + margin),
+        "top-right": (screen.right() - widget.width() - margin, screen.top() + margin),
+        "bottom-left": (screen.left() + margin, screen.bottom() - widget.height() - margin),
+        "bottom-center": (
+            screen.left() + (screen.width() - widget.width()) // 2,
+            screen.bottom() - widget.height() - margin,
+        ),
+        "bottom-right": (
+            screen.right() - widget.width() - margin,
+            screen.bottom() - widget.height() - margin,
+        ),
     }
-    x, y = positions.get(position, positions["top-center"])
+    return positions[position]
+
+
+def main():
+    if getattr(sys, "frozen", False):
+        application_path = Path(sys.executable).parent
+    else:
+        application_path = Path(__file__).resolve().parent
+
+    paths = app_paths()
+    setup_logging(paths["state"])
+    config = load_config(application_path, paths["config"] / "config.json")
+
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(VERSION)
+    app.setOrganizationName("yhas1984")
+    if hasattr(app, "setDesktopFileName"):
+        app.setDesktopFileName(APP_SLUG)
+    icon_path = application_path / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
+    state_path = paths["state"] / "window.json"
+    w = CryptoWidget(config, paths["cache"] / "prices.json", state_path)
+    x, y = initial_position(app, w, config, state_path)
     w.move(x, y)
     w.show()
     sys.exit(app.exec_())

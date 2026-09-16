@@ -1,24 +1,24 @@
 # WidgetFinanzas
 
-Widget de escritorio para Linux que muestra cotizaciones en tiempo real de criptomonedas, índices bursátiles, commodities y forex en una barra scrolleable transparente.
+Widget de escritorio para Linux que muestra cotizaciones periódicas de criptomonedas, índices bursátiles, commodities y forex en una barra scrolleable transparente.
 
-![screenshot](icon.png)
+![Icono de Widget Finanzas](icon.png)
 
 ## Características
 
 - **Visualización tipo ticker** — precios se desplazan horizontalmente con scroll infinito
 - **Soporte multi-activo** — criptos, índices, commodities, forex, acciones
-- **Actualización automática** — intervalo configurable con retry y backoff exponencial
+- **Actualización automática** — intervalo configurable, timeout y reintento limitado
 - **Caché local** — si la API falla, muestra los últimos datos conocidos con indicador ⚠️
 - **Código de colores** — cambios de precio con colores y flechas según magnitud
 - **Efecto de parpadeo** — cuando un activo tiene un cambio significativo (>1%)
 - **Transparente y siempre al fondo** — se integra al escritorio sin molestar
-- **Posición configurable** — top-left, top-center, top-right, bottom-left, bottom-center, bottom-right
-- **Menú contextual / tray icon** — click derecho para actualizar, pausar scroll o salir
-- **Auto-inicio** — se configura automáticamente en el arranque de sesión (Linux)
+- **Posición persistente** — recuerda la posición exacta y el monitor después de arrastrarlo
+- **Auto-inicio opcional** — desactivado por defecto y configurable en Linux
 - **Logging estructurado** — trazas con timestamps y niveles (DEBUG/INFO/ERROR)
 - **Validación de config** — detecta errores en `config.json` antes de arrancar
-- **Tests unitarios** — cobertura de formato, colores y validación
+- **Tests unitarios** — cobertura de configuración, caché, formato, persistencia y regresiones
+- **X11 y Wayland** — Qt elige la plataforma disponible sin forzar XWayland
 
 ## Requisitos
 
@@ -48,21 +48,16 @@ pip install -r requirements.txt
 python crypto_widget.py
 ```
 
-O desde el paquete:
-
-```bash
-python -m src.main
-```
-
 ## Configuración
 
-Editar `config.json`:
+Los valores incluidos están en `config.json`. En una instalación `.deb`, crea una configuración personal en `~/.config/widget-finanzas/config.json`; sus valores tienen prioridad y no se sobrescriben al actualizar el paquete.
 
 ```json
 {
   "currency": "usd",
   "update_interval_seconds": 60,
-  "run_on_startup": true,
+  "run_on_startup": false,
+  "desktop_mode": true,
   "position": "top-center",
   "window_width": 1000,
   "window_height": 50,
@@ -72,6 +67,7 @@ Editar `config.json`:
       "symbol": "BTC",
       "color": "#F7931A",
       "type": "crypto",
+      "quote_currency": "usd",
       "yf_symbol": "BTC-USD"
     }
   ],
@@ -87,11 +83,14 @@ Editar `config.json`:
 | `currency` | Moneda de cotización |
 | `update_interval_seconds` | Intervalo de actualización |
 | `run_on_startup` | Auto-inicio en Linux |
+| `desktop_mode` | Intenta mantener el ticker integrado al escritorio cuando el compositor lo permite |
 | `position` | `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, `bottom-right` |
 | `window_width` | Ancho del widget (px) |
 | `window_height` | Alto del widget (px) |
 | `assets` | Lista de activos |
 | `icons` | Diccionario de iconos por símbolo |
+
+La posición se guarda en `~/.local/state/widget-finanzas/window.json`, la caché en `~/.cache/widget-finanzas/prices.json` y el log en `~/.local/state/widget-finanzas/widget-finanzas.log`. Se respetan las variables XDG equivalentes.
 
 ### Activos compatibles
 
@@ -114,24 +113,14 @@ pyinstaller CryptoWidget.spec
 
 ```
 WidgetFinanzas/
-├── src/
-│   ├── main.py              # Entry point
-│   ├── config.py            # Carga y validación de config
-│   ├── constants.py         # Constantes centralizadas
-│   ├── data_fetcher.py      # Worker de Yahoo Finance
-│   ├── autostart.py         # Lógica .desktop
-│   ├── utils.py             # Helpers y logging
-│   └── ui/
-│       ├── widgets.py       # ScrollingLabel
-│       ├── main_window.py   # CryptoWidget
-│       └── tray_menu.py     # Menú contextual
-├── tests/
-│   ├── test_config.py
-│   └── test_formatting.py
-├── crypto_widget.py         # Wrapper
+├── crypto_widget.py         # Punto de entrada estable
+├── crypto_widgetV5.py       # Datos, persistencia e interfaz
+├── tests/                   # Pruebas automatizadas
 ├── config.json
 ├── requirements.txt
+├── requirements-dev.txt
 ├── CryptoWidget.spec
+├── packaging/build-deb.sh
 └── icon.png
 ```
 
@@ -143,14 +132,22 @@ Los paquetes compilados se publican como assets en la sección [Releases](https:
 sudo apt install ./widget-finanzas_*_amd64.deb
 ```
 
+### Desinstalación
+
+```bash
+sudo apt remove widget-finanzas
+```
+
+El paquete elimina el lanzador, el icono y las entradas de autoinicio administradas por versiones anteriores. La configuración, la caché y el estado personal se conservan para permitir una reinstalación posterior.
+
 ## Compilar el `.deb`
 
 ```bash
 python -m pip install -r requirements.txt
-bash packaging/build-deb.sh 5.0.2
+bash packaging/build-deb.sh 5.0.3
 ```
 
-Al crear un tag `v5.0.2`, GitHub Actions compila el paquete y lo publica automáticamente como asset del release.
+Al crear un tag `v5.0.3`, GitHub Actions ejecuta las pruebas, compila el paquete y lo publica automáticamente como asset del release.
 
 ## Licencia
 
