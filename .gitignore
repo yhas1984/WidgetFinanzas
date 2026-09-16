@@ -5,6 +5,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.package-build/
+*.deb
 
 # PyInstaller auto-generated spec files
 *.spec

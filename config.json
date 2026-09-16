@@ -1,7 +1,7 @@
 {
   "currency": "usd",
   "update_interval_seconds": 60,
-  "run_on_startup": true,
+  "run_on_startup": false,
   "desktop_mode": true,
   "position": "top-center",
   "window_width": 1000,
@@ -12,6 +12,7 @@
       "symbol": "BTC",
       "color": "#F7931A",
       "type": "crypto",
+      "quote_currency": "usd",
       "yf_symbol": "BTC-USD"
     },
     {
@@ -19,6 +20,7 @@
       "symbol": "ETH",
       "color": "#627EEA",
       "type": "crypto",
+      "quote_currency": "usd",
       "yf_symbol": "ETH-USD"
     },
     {
@@ -26,6 +28,7 @@
       "symbol": "HBAR",
       "color": "#00BFFF",
       "type": "crypto",
+      "quote_currency": "usd",
       "yf_symbol": "HBAR-USD"
     },
     {
@@ -33,6 +36,7 @@
       "symbol": "S&P500",
       "color": "#00FF00",
       "type": "yahoo",
+      "quote_currency": "points",
       "yf_symbol": "^GSPC"
     },
     {
@@ -40,6 +44,7 @@
       "symbol": "GOLD",
       "color": "#FFD700",
       "type": "yahoo",
+      "quote_currency": "usd",
       "yf_symbol": "GC=F"
     },
     {
@@ -47,6 +52,7 @@
       "symbol": "OIL",
       "color": "#FFA500",
       "type": "yahoo",
+      "quote_currency": "usd",
       "yf_symbol": "CL=F"
     },
     {
@@ -54,6 +60,7 @@
       "symbol": "EUR/USD",
       "color": "#4169E1",
       "type": "yahoo",
+      "quote_currency": "points",
       "yf_symbol": "EURUSD=X"
     },
     {
@@ -61,6 +68,7 @@
       "symbol": "USD/EUR",
       "color": "#9932CC",
       "type": "yahoo",
+      "quote_currency": "points",
       "yf_symbol": "USDEUR=X"
     }
   ],
