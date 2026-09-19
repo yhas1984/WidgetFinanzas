@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-5.0.3}"
+VERSION="${1:-5.0.4}"
 PYTHON="${PYTHON:-python3}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${ROOT}/.package-build"

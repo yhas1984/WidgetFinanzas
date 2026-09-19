@@ -4,6 +4,15 @@ from PyQt5.QtWidgets import QApplication
 from crypto_widgetV5 import CryptoWidget
 
 
+def process_events_until(app, predicate, attempts=500):
+    for _ in range(attempts):
+        app.processEvents()
+        if predicate():
+            return True
+        QThread.msleep(1)
+    return False
+
+
 def test_zero_previous_price_does_not_crash(tmp_path, monkeypatch):
     config_home = tmp_path / "config"
     data_home = tmp_path / "data"
@@ -28,11 +37,7 @@ def test_zero_previous_price_does_not_crash(tmp_path, monkeypatch):
         "position": "top-center",
     }
     window = CryptoWidget(config, tmp_path / "prices.json", tmp_path / "window.json")
-    for _ in range(100):
-        app.processEvents()
-        if window.thread is None:
-            break
-        QThread.msleep(1)
+    assert process_events_until(app, lambda: not window._update_in_progress)
     window.config["assets"] = [{
         "id": "zero",
         "symbol": "ZERO",
@@ -57,10 +62,40 @@ def test_zero_previous_price_does_not_crash(tmp_path, monkeypatch):
     saved = (tmp_path / "window.json").read_text(encoding="utf-8")
     assert '"x": 123' in saved
     assert '"y": 234' in saved
-    window.close()
-    for _ in range(100):
-        app.processEvents()
-        if window.thread is None:
-            break
-        QThread.msleep(1)
+    window.request_exit()
+    assert process_events_until(app, lambda: window.thread is None)
     assert window.thread is None
+
+
+def test_reuses_worker_thread_and_ignores_external_close(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    config = {
+        "currency": "usd",
+        "update_interval_seconds": 3600,
+        "run_on_startup": False,
+        "desktop_mode": False,
+        "assets": [],
+        "icons": {},
+        "window_width": 500,
+        "window_height": 50,
+        "position": "top-center",
+    }
+    window = CryptoWidget(config, tmp_path / "prices.json", tmp_path / "window.json")
+    window.show()
+    assert process_events_until(app, lambda: not window._update_in_progress)
+    original_thread = window.thread
+
+    for _ in range(100):
+        window.trigger_update()
+        assert process_events_until(app, lambda: not window._update_in_progress)
+
+    assert window.thread is original_thread
+    assert original_thread.isRunning()
+
+    window.close()
+    app.processEvents()
+    assert not window._closing
+    assert window.isVisible()
+
+    window.request_exit()
+    assert process_events_until(app, lambda: window.thread is None)

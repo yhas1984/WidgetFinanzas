@@ -8,7 +8,7 @@ Widget de escritorio para Linux que muestra cotizaciones periódicas de criptomo
 
 - **Visualización tipo ticker** — precios se desplazan horizontalmente con scroll infinito
 - **Soporte multi-activo** — criptos, índices, commodities, forex, acciones
-- **Actualización automática** — intervalo configurable, timeout y reintento limitado
+- **Actualización automática estable** — intervalo configurable, timeout, reintento limitado y un único hilo reutilizable
 - **Caché local** — si la API falla, muestra los últimos datos conocidos con indicador ⚠️
 - **Código de colores** — cambios de precio con colores y flechas según magnitud
 - **Efecto de parpadeo** — cuando un activo tiene un cambio significativo (>1%)
@@ -90,7 +90,7 @@ Los valores incluidos están en `config.json`. En una instalación `.deb`, crea 
 | `assets` | Lista de activos |
 | `icons` | Diccionario de iconos por símbolo |
 
-La posición se guarda en `~/.local/state/widget-finanzas/window.json`, la caché en `~/.cache/widget-finanzas/prices.json` y el log en `~/.local/state/widget-finanzas/widget-finanzas.log`. Se respetan las variables XDG equivalentes.
+La posición se guarda en `~/.local/state/widget-finanzas/window.json`, la caché en `~/.cache/widget-finanzas/prices.json` y el log en `~/.local/state/widget-finanzas/widget-finanzas.log`. Los fallos nativos se registran en `~/.local/state/widget-finanzas/crash.log`. Se respetan las variables XDG equivalentes.
 
 ### Activos compatibles
 
@@ -144,10 +144,10 @@ El paquete elimina el lanzador, el icono y las entradas de autoinicio administra
 
 ```bash
 python -m pip install -r requirements.txt
-bash packaging/build-deb.sh 5.0.3
+bash packaging/build-deb.sh 5.0.4
 ```
 
-Al crear un tag `v5.0.3`, GitHub Actions ejecuta las pruebas, compila el paquete y lo publica automáticamente como asset del release.
+Al crear un tag `v5.0.4`, GitHub Actions ejecuta las pruebas, compila el paquete y lo publica automáticamente como asset del release.
 
 ## Licencia
 
