@@ -1,6 +1,27 @@
 import json
+import os
 
-from crypto_widgetV5 import DEFAULT_CONFIG, load_config, validate_config
+from crypto_widgetV5 import (
+    DEFAULT_CONFIG,
+    configure_runtime_environment,
+    load_config,
+    validate_config,
+)
+
+
+def test_runtime_environment_uses_packaged_x11_plugin_and_limits_native_threads(
+    monkeypatch,
+):
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "dxcb;xcb")
+    for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        monkeypatch.delenv(variable, raising=False)
+
+    configure_runtime_environment()
+
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
+    for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        assert os.environ[variable] == "1"
 
 
 def test_invalid_config_uses_safe_values():

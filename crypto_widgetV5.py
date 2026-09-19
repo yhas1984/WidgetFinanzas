@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import faulthandler
 import json
 import logging
 import math
@@ -11,14 +12,28 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+
+def configure_runtime_environment():
+    """Reduce hilos nativos y evita seleccionar un plugin Deepin no empaquetado."""
+    for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(variable, "1")
+
+    platform = os.environ.get("QT_QPA_PLATFORM", "")
+    session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    if session_type == "x11" and platform.split(";", 1)[0] == "dxcb":
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+
+configure_runtime_environment()
+
 import yfinance as yf
-from PyQt5.QtCore import QObject, QPoint, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QPoint, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QColor, QIcon, QPainter
 from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow, QVBoxLayout, QWidget
 
 APP_NAME = "Widget Finanzas"
 APP_SLUG = "widget-finanzas"
-VERSION = "5.0.3"
+VERSION = "5.0.4"
 VALID_POSITIONS = {
     "top-left", "top-center", "top-right",
     "bottom-left", "bottom-center", "bottom-right",
@@ -36,6 +51,7 @@ DEFAULT_CONFIG = {
 }
 
 logger = logging.getLogger(APP_SLUG)
+_crash_log_handle = None
 
 
 def _xdg_dir(env_name, fallback):
@@ -70,6 +86,34 @@ def setup_logging(log_dir):
         "%(asctime)s %(levelname)s %(name)s %(message)s"
     ))
     logger.addHandler(handler)
+
+
+def setup_crash_logging(log_dir):
+    """Conserva trazas de excepciones y fallos nativos que antes quedaban ocultos."""
+    global _crash_log_handle
+    if _crash_log_handle is not None:
+        return
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _crash_log_handle = (log_dir / "crash.log").open(
+            "a", encoding="utf-8", buffering=1
+        )
+        faulthandler.enable(_crash_log_handle, all_threads=True)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("No se pudo activar el registro de fallos nativos: %s", exc)
+
+    previous_hook = sys.excepthook
+
+    def exception_hook(exc_type, value, traceback):
+        logger.critical(
+            "Excepción no controlada",
+            exc_info=(exc_type, value, traceback),
+        )
+        previous_hook(exc_type, value, traceback)
+
+    exception_hook._widget_finanzas_hook = True
+    if not getattr(sys.excepthook, "_widget_finanzas_hook", False):
+        sys.excepthook = exception_hook
 
 
 def read_json(path, default=None):
@@ -246,7 +290,7 @@ class DataWorker(QObject):
                     group_by="ticker",
                     auto_adjust=True,
                     prepost=True,
-                    threads=True,
+                    threads=False,
                     progress=False,
                     timeout=8,
                 )
@@ -341,6 +385,7 @@ class DataWorker(QObject):
                 prices.append(item)
         return {"prices": prices, "stale": bool(prices), "error": error}
 
+    @pyqtSlot()
     def run(self):
         cached_prices = self._cached_prices()
         try:
@@ -392,6 +437,15 @@ class DataWorker(QObject):
                 self.error_occurred.emit(str(exc))
         finally:
             self.finished.emit()
+
+    @pyqtSlot()
+    def stop(self):
+        """Detiene el hilo persistente desde su propio bucle de eventos."""
+        current_thread = QThread.currentThread()
+        app = QApplication.instance()
+        if app is not None:
+            self.moveToThread(app.thread())
+        current_thread.quit()
 
 # ---------------- Etiqueta scrolleable con efectos ----------------
 class ScrollingLabel(QLabel):
@@ -501,6 +555,9 @@ class ScrollingLabel(QLabel):
 
 # ---------------- Widget principal ----------------
 class CryptoWidget(QMainWindow):
+    update_requested = pyqtSignal()
+    stop_worker_requested = pyqtSignal()
+
     def __init__(self, config, cache_path, state_path):
         super().__init__()
         self.config = config
@@ -511,15 +568,22 @@ class CryptoWidget(QMainWindow):
         self.worker = None
         self.thread = None
         self._closing = False
+        self._quit_requested = False
+        self._update_in_progress = False
+        self._stop_requested = False
         self.previous_prices = {}  # Para detectar cambios
         self.drag_position = QPoint()
         self.is_dragging = False
         self.init_ui()
         self.load_styles()
-        self.trigger_update()
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.trigger_update)
         self.update_timer.start(self.config["update_interval_seconds"] * 1000)
+        self.visibility_timer = QTimer(self)
+        self.visibility_timer.timeout.connect(self.ensure_visible)
+        self.visibility_timer.start(10_000)
+        self._start_worker_thread()
+        self.trigger_update()
 
     def check_autostart(self):
         """Mantiene una sola entrada de autoinicio y elimina launchers heredados."""
@@ -628,41 +692,74 @@ X-WidgetFinanzas-Managed=true
             #scroll_label { font-size: 14pt; font-weight: bold; background-color: transparent; }
         """)
 
-    def trigger_update(self):
-        if self._closing:
+    def _start_worker_thread(self):
+        if self._closing or (self.thread is not None and self.thread.isRunning()):
             return
-        if self.thread is not None:
-            try:
-                if self.thread.isRunning():
-                    return
-            except RuntimeError:
-                self.thread = None
-                self.worker = None
 
+        self._stop_requested = False
+        thread = QThread(self)
         worker = DataWorker(
             self.config["assets"],
             self.config["currency"],
             self.cache_path,
         )
-        thread = QThread()
+        worker.moveToThread(thread)
         self.worker = worker
         self.thread = thread
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
+        self.update_requested.connect(worker.run, Qt.QueuedConnection)
+        self.stop_worker_requested.connect(worker.stop, Qt.QueuedConnection)
         worker.data_updated.connect(self.update_ui)
         worker.error_occurred.connect(self.show_error)
-        worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(thread.quit)
+        worker.finished.connect(self._update_finished)
+        thread.finished.connect(self._thread_finished)
+        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda: self._thread_finished(thread))
         thread.start()
+        logger.info("Hilo de actualización iniciado")
 
-    def _thread_finished(self, finished_thread):
-        if self.thread is finished_thread:
-            self.thread = None
-            self.worker = None
+    def trigger_update(self):
+        if self._closing or self._update_in_progress:
+            return
+
+        if self.thread is None or not self.thread.isRunning():
+            logger.warning("El hilo de actualización no estaba activo; reiniciándolo")
+            self._start_worker_thread()
+        if self.worker is None or self.thread is None or not self.thread.isRunning():
+            logger.error("No se pudo iniciar el hilo de actualización")
+            return
+
+        self._update_in_progress = True
+        logger.info("Actualización de cotizaciones iniciada")
+        self.update_requested.emit()
+
+    def _update_finished(self):
+        self._update_in_progress = False
+        logger.info("Actualización de cotizaciones finalizada")
+
+    def _request_worker_stop(self):
+        if self._stop_requested:
+            return
+        self._stop_requested = True
+        if self.thread is not None and self.thread.isRunning():
+            self.thread.requestInterruption()
+            self.stop_worker_requested.emit()
+        else:
+            self._thread_finished()
+
+    def _thread_finished(self):
+        self._update_in_progress = False
+        self.worker = None
+        self.thread = None
+        logger.info("Hilo de actualización detenido")
         if self._closing:
             QApplication.instance().quit()
+        else:
+            QTimer.singleShot(1_000, self._start_worker_thread)
+
+    def ensure_visible(self):
+        if not self._closing and not self.isVisible():
+            logger.warning("La ventana fue ocultada externamente; restaurándola")
+            self.show()
 
     def update_ui(self, data):
         segments = []
@@ -730,7 +827,16 @@ X-WidgetFinanzas-Managed=true
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self.close()
+            self.request_exit()
+        else:
+            super().keyPressEvent(event)
+
+    def request_exit(self):
+        """Cierra de forma explícita; los cierres externos accidentales se ignoran."""
+        if self._closing:
+            return
+        self._quit_requested = True
+        self.close()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -759,24 +865,25 @@ X-WidgetFinanzas-Managed=true
         })
 
     def closeEvent(self, event):
-        self.save_position()
-        self.update_timer.stop()
-        self.scroll_label.timer.stop()
-        self.scroll_label.blink_timer.stop()
-        running = False
-        if self.thread is not None:
-            try:
-                running = self.thread.isRunning()
-            except RuntimeError:
-                self.thread = None
-                self.worker = None
-        if running:
-            self._closing = True
-            self.thread.requestInterruption()
-            self.hide()
+        if not self._quit_requested:
+            logger.warning("Solicitud externa de cierre ignorada para mantener el widget activo")
+            event.ignore()
+            QTimer.singleShot(0, self.show)
+            return
+
+        if self._closing:
             event.ignore()
             return
-        event.accept()
+
+        self._closing = True
+        self.save_position()
+        self.update_timer.stop()
+        self.visibility_timer.stop()
+        self.scroll_label.timer.stop()
+        self.scroll_label.blink_timer.stop()
+        self.hide()
+        self._request_worker_stop()
+        event.ignore()
 
 
 def initial_position(app, widget, config, state_path):
@@ -830,9 +937,18 @@ def main():
 
     paths = app_paths()
     setup_logging(paths["state"])
+    setup_crash_logging(paths["state"])
+    logger.info(
+        "Iniciando %s %s (%s, Qt=%s)",
+        APP_NAME,
+        VERSION,
+        os.environ.get("XDG_SESSION_TYPE", "desconocida"),
+        os.environ.get("QT_QPA_PLATFORM", "automático"),
+    )
     config = load_config(application_path, paths["config"] / "config.json")
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(VERSION)
     app.setOrganizationName("yhas1984")
@@ -841,6 +957,7 @@ def main():
     icon_path = application_path / "icon.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
+    app.aboutToQuit.connect(lambda: logger.info("Aplicación finalizada"))
 
     state_path = paths["state"] / "window.json"
     w = CryptoWidget(config, paths["cache"] / "prices.json", state_path)
